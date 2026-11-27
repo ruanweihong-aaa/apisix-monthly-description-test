@@ -120,3 +120,5 @@ The Chaitin WAF plugin adds an `allow_degradation` option that lets requests pro
 ## Conclusion
 
 The [official website](https://apisix.apache.org/) and [GitHub Issues](https://github.com/apache/apisix/issues) of Apache APISIX provide a wealth of documentation, tutorials, and real-world use cases. If you encounter any issues, you can refer to the documentation, search for keywords in Issues, or participate in discussions on Issues to share your ideas and practical experiences.
+
+<!-- Test revision: source monthly report updated. -->
