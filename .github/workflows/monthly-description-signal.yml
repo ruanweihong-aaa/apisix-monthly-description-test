@@ -1,0 +1,23 @@
+name: Monthly description signal
+
+# 这是无权限的通知入口。业务代码、模型密钥和 GitHub 写操作都在另一个 workflow。
+# 本文件不 checkout、不安装依赖、不执行贡献者提交的代码。
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, closed]
+    # 不设 paths 过滤；月报被移出 diff 后，关闭等后续事件仍需要发出信号。
+
+# ASF: fork PR 只发送事件信号，不 checkout，也不接触凭据。
+permissions: {}
+concurrency:
+  group: monthly-description-signal-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+  # 同一 PR 的信号串行，避免主动取消已经开始的通知。
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # 这里只需要正常结束，由 workflow_run 唤醒 Monthly descriptions。
+      - run: echo 'Monthly description reconciliation requested'
