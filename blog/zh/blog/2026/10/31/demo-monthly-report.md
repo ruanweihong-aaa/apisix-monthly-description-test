@@ -1,6 +1,6 @@
 ---
 title: "自动摘要效果演示：2026 年 10 月月报"
-description: ""
+description: '2026 年 10 月月报：Stream Prometheus 指标新增服务维度，Kubernetes 服务发现支持多集群选择，OpenID Connect 可将已验证声明映射到上游请求头。'
 tags: [Community]
 ---
 
