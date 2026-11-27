@@ -1,7 +1,7 @@
 ---
 title: "2026 社区月报 (10.01 - 10.31)"
 keywords: ["Apache APISIX", "API 网关", "社区月报", "贡献者"]
-description: Apache APISIX 社区的月报旨在帮助社区成员更全面地了解社区的最新动态，方便大家参与到 Apache APISIX 社区中来。
+description: "本期月报聚焦流量可观测性与服务发现：Stream Prometheus 指标支持按服务区分，Kubernetes 服务发现可跨集群组合节点；同时支持将 OpenID Connect 验证后的声明传递至上游请求头。"
 tags: [Community]
 ---
 
