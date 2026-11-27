@@ -1,0 +1,141 @@
+name: Monthly descriptions
+# 运行前提：这两个 workflow 和 prompt 先进入默认分支；仓库配置 DEEPSEEK_API_KEY。
+# GitHub 还须允许所引用的外部 Action，以及 GITHUB_TOKEN 创建 PR 和更新自动化分支。
+# 现有 deploy.yml 的成功发布能证明 contents: write 可用，不能证明创建 PR 的开关已启用。
+on:
+  # ASF 使用 signal + workflow_run：fork PR 只发信号，有权限的代码来自默认分支。
+  workflow_run:
+    workflows: [Monthly description signal]
+    types: [completed]
+  workflow_dispatch:
+    # 索引尚未更新、事件遗漏或上次执行失败时，可手工指定源 PR 号重跑。
+    inputs:
+      pr_number:
+        description: Original monthly report PR number
+        required: true
+permissions: {}
+concurrency:
+  # 同一来源仓库/分支串行执行；不主动中断已经开始的 agent。
+  group: monthly-${{ github.event.workflow_run.head_repository.id || github.repository_id }}-${{ github.event.workflow_run.head_branch || github.event.inputs.pr_number }}
+  cancel-in-progress: false
+jobs:
+  summarize:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # contents 用于推送专用分支，pull-requests 用于创建、关闭和转换草稿。
+      # 权限属于整个 job；workspace profile 不等于独立 job 的凭据隔离。
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 不检出 PR head/merge ref，也不安装或执行 PR 中的代码。
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          # 后续 create-pull-request 通过自己的 token 参数配置推送认证。
+      # 只下载月报文本，绝不 checkout 或执行 PR 代码。
+      - uses: actions/github-script@v7
+        id: source
+        with:
+          script: |
+            const fs = require('fs'), path = require('path'), repo = context.repo;
+            // 只定位本次事件的源 PR，不遍历历史月报。手工运行时直接使用输入的 PR 号。
+            let number = Number(context.payload.inputs?.pr_number || context.payload.workflow_run?.pull_requests?.[0]?.number);
+            if (!number) {
+              // fork 的 workflow_run.pull_requests 可能为空，改用本次 head SHA 定位。
+              // 再核对当前 head，避免把仅在历史提交中包含该 SHA 的其他 PR 当成目标。
+              const sha = context.payload.workflow_run.head_sha;
+              if (!/^[0-9a-f]{40}$/.test(sha)) throw Error('Invalid SHA');
+              const {data} = await github.rest.search.issuesAndPullRequests({q: `repo:${repo.owner}/${repo.repo} is:pr ${sha}`});
+              for (const p of data.items) if ((await github.rest.pulls.get({...repo, pull_number:p.number})).data.head.sha === sha) { number=p.number; break; }
+            }
+            // 搜索无结果时结束本次执行；首版不做后台轮询，可通过手工入口重跑。
+            if (!number) return;
+            const {data:pr} = await github.rest.pulls.get({...repo, pull_number:number});
+            const branch = `automation/monthly-description-${number}`;
+            // 关联草稿的事件不再创建新的关联草稿，避免自动化递归触发。
+            if (pr.head.ref.startsWith('automation/monthly-description-')) return;
+            if (pr.state === 'closed' && !pr.merged) {
+              // 源 PR 被放弃：关闭它对应的开放草稿，直接结束，不调用模型。
+              const {data} = await github.rest.pulls.list({...repo, state:'open', head:`${repo.owner}:${branch}`});
+              for (const p of data) await github.rest.pulls.update({...repo, pull_number:p.number, state:'closed'});
+              return;
+            }
+            // 首版只面向默认分支和约定的中英文月报路径；其他 PR 不进入摘要流程。
+            if (pr.base.ref !== context.payload.repository.default_branch) throw Error('First version supports default-branch reports only');
+            const files = (await github.paginate(github.rest.pulls.listFiles, {...repo, pull_number:number})).filter(f => f.status !== 'removed' && /^blog\/(en|zh)\/blog\/\d{4}\/\d{2}\/\d{2}\/[^/]*monthly-report\.md$/.test(f.filename));
+            if (!files.length) return;
+            // 未合并：预览源 PR 的最新月报文本；已合并：读取当前默认分支内容。
+            // 合并后不能重新覆盖旧 head 正文，否则可能带回已经过时的文章内容。
+            const merged = {}, ref = pr.merged ? require('child_process').execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim() : pr.head.sha;
+            for (const f of files) {
+              const {data} = await github.rest.repos.getContent({...repo, path:f.filename, ref});
+              if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 200000) throw Error('Invalid report');
+              fs.mkdirSync(path.dirname(f.filename), {recursive:true}); fs.writeFileSync(f.filename, Buffer.from(data.content,'base64'));
+              const [,year,month] = f.filename.match(/\/blog\/(\d{4})\/(\d{2})\//), period = `${year}-${month}`;
+              // 日期以路径的日历月为准；同一月份的中英文报告共用一次查询结果。
+              if (merged[period]) continue;
+              const end = new Date(Date.UTC(+year,+month,0)).toISOString().slice(0,10);
+              const {data:prs} = await github.rest.search.issuesAndPullRequests({q:`repo:apache/apisix is:pr is:merged merged:${period}-01..${end}`, per_page:100});
+              // 首版最多接受当月 100 个 PR，结果不完整就失败，不能用截断材料生成摘要。
+              if (prs.incomplete_results || prs.total_count > 100) throw Error('Incomplete monthly PR context');
+              merged[period] = prs.items.map(p => ({number:p.number,title:p.title,url:p.html_url}));
+            }
+            // 两份运行时输入：正文已落到目标路径；JSON 提供当期 PR 标题及证据链接。
+            // monthly-paths 供 agent 与 git add 使用；这些临时输入不加入预览提交。
+            fs.writeFileSync('monthly-context.json', JSON.stringify(merged));
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/monthly-paths`, files.map(f=>f.filename).join('\n')+'\n');
+            core.setOutput('paths', files.map(f=>f.filename).join('\n'));
+            core.setOutput('number', number); core.setOutput('merged', pr.merged);
+      - if: steps.source.outputs.number != ''
+        id: preview
+        # 未合并的新月报本来就包含正文差异，先做本地预览提交，再单独检查 agent 改动。
+        # 此处仅操作 runner 本地 Git，不提交到原月报 PR 的分支。
+        run: |
+          git add --pathspec-from-file="$RUNNER_TEMP/monthly-paths"
+          git diff --cached --quiet || git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -m 'Preview source monthly reports'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56
+        if: steps.source.outputs.number != ''
+        with:
+          # 参数名由 Codex Action 定义；实际密钥、接口和模型均来自 DeepSeek。
+          openai-api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          responses-api-endpoint: https://api.deepseek.com/responses
+          model: deepseek-flash
+          codex-version: '0.172.0'
+          # 与已验证的 CLI 版本一致；摘要内容和作者摘要保留规则写在短 prompt 中。
+          prompt-file: .github/prompts/monthly-description.md
+          permission-profile: ':workspace'
+          # agent 可以编辑工作区，不能直接联网；GitHub 数据已由上一步准备好。
+          # 外部贡献者也会触发此 Action；该设置不替代 ASF 对 fork workflow 的审批。
+          allow-users: '*'
+          allow-bots: true
+      # 对比不可由 agent 改写的步骤输出 SHA，同时覆盖已暂存和未暂存的更改。
+      # 这里只检查 diff 行前缀，不是完整的 YAML/语义校验；多行 description 暂不支持。
+      - if: steps.source.outputs.number != ''
+        env:
+          PREVIEW_BASE: ${{ steps.preview.outputs.sha }}
+        run: |
+          git diff "$PREVIEW_BASE" --unified=0 -- blog/en/blog blog/zh/blog | awk '/^(diff --git|index |--- |\+\+\+ |@@)/ {next} /^[-+]/ && $0 !~ /^[-+]description:/ {bad=1} END {exit bad}'
+      - uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676
+        if: steps.source.outputs.number != ''
+        id: draft
+        with:
+          token: ${{ github.token }}
+          base: ${{ github.event.repository.default_branch }}
+          branch: automation/monthly-description-${{ steps.source.outputs.number }}
+          # 固定分支让重复运行更新现有开放草稿，不因每次执行而新建一份。
+          draft: always-true
+          delete-branch: true
+          # 只收集目标月报的未提交变更；无差异时 Action 会关闭多余草稿。
+          add-paths: ${{ steps.source.outputs.paths }}
+          title: 'docs: monthly descriptions for #${{ steps.source.outputs.number }}'
+          body: 'Source: #${{ steps.source.outputs.number }}. Generated by DeepSeek via Codex. Review after the source PR merges.'
+      - if: steps.source.outputs.merged == 'true' && steps.draft.outputs.pull-request-number != ''
+        # 源 PR 合并后才转为可审核；不批准、不合并，也不改变原 PR 的审核要求。
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.draft.outputs.pull-request-number }}
+        run: gh pr ready "$PR" --repo "$GITHUB_REPOSITORY"
