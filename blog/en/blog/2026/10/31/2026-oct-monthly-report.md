@@ -1,7 +1,7 @@
 ---
 title: "2026 Monthly Report (October 01 - October 31)"
 keywords: ["Apache APISIX", "API Gateway", "Monthly Report", "Contributor"]
-description: Our monthly Apache APISIX community report generates insights into the project's monthly developments. The reports provide a pathway into the Apache APISIX community, ensuring that you stay well-informed and actively involved.
+description: "October's APISIX highlights include service-labelled Prometheus stream metrics and per-process resource gauges, a new gzip/deflate request-decompress plugin, and verified OpenID Connect claim mapping with clearer token-failure responses."
 tags: [Community]
 ---
 
